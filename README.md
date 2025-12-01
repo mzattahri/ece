@@ -1,5 +1,7 @@
 [![GoDoc reference](https://img.shields.io/badge/godoc-reference-blue.svg)](https://pkg.go.dev/mz.attahri.com/code/ece/v2)
 [![npm version](https://img.shields.io/npm/v/@mzattahri/ece.svg)](https://www.npmjs.com/package/@mzattahri/ece)
+[![Lint](https://github.com/mzattahri/ece/actions/workflows/lint.yml/badge.svg)](https://github.com/mzattahri/ece/actions/workflows/lint.yml)
+[![Test](https://github.com/mzattahri/ece/actions/workflows/test.yml/badge.svg)](https://github.com/mzattahri/ece/actions/workflows/test.yml)
 
 # Encrypted-Content-Encoding for HTTP
 
