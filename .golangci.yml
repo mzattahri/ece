@@ -113,10 +113,11 @@ issues:
 
 output:
   formats:
-    colored-line-number:
+    text:
+      path: stdout
       print-linter-name: true
       print-issued-lines: true
-  sort-results: true
+      colors: true
   sort-order:
     - linter
     - file
