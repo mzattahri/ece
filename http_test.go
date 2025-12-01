@@ -15,7 +15,9 @@ import (
 func TestResponseWriter(t *testing.T) {
 	fn := func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(plain)
+		if _, err := w.Write(plain); err != nil {
+			t.Errorf("failed to write response: %v", err)
+		}
 	}
 
 	encoding, ok := encodingFromKey(key)
@@ -31,11 +33,15 @@ func TestResponseWriter(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	resp := rec.Result()
 
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("failed to close response body: %v", err)
+		}
+	}()
 	sent, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
 
 	// Ensure the data sent is not the same as the one passed.
 	assertNotEqual(t, "sent data", plain, sent)
@@ -78,8 +84,14 @@ func TestRequestBody(t *testing.T) {
 
 func TestIgnoreUnknownEncoding(t *testing.T) {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		_, _ = io.Copy(w, r.Body)
+		defer func() {
+			if err := r.Body.Close(); err != nil {
+				t.Errorf("failed to close request body: %v", err)
+			}
+		}()
+		if _, err := io.Copy(w, r.Body); err != nil {
+			t.Errorf("failed to copy body: %v", err)
+		}
 	}
 
 	h := Handler(key, 25, "", http.HandlerFunc(fn))
@@ -97,8 +109,14 @@ func TestIgnoreUnknownEncoding(t *testing.T) {
 
 func TestMiddlewareInvalidKey(t *testing.T) {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		_, _ = io.Copy(w, r.Body)
+		defer func() {
+			if err := r.Body.Close(); err != nil {
+				t.Errorf("failed to close request body: %v", err)
+			}
+		}()
+		if _, err := io.Copy(w, r.Body); err != nil {
+			t.Errorf("failed to copy body: %v", err)
+		}
 	}
 
 	h := Handler(key, 25, "", http.HandlerFunc(fn))
@@ -138,7 +156,9 @@ func TestTransport(t *testing.T) {
 		// Write plainText, with the expectation that it will be
 		// transparently encrypted.
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(plainText)
+		if _, err := w.Write(plainText); err != nil {
+			t.Errorf("failed to write response: %v", err)
+		}
 	}
 	h := Handler(key, 25, "", http.HandlerFunc(fn))
 	server := httptest.NewServer(h)
@@ -164,11 +184,15 @@ func TestTransport(t *testing.T) {
 	ce := resp.Header.Get("Content-Encoding")
 	assertEqual(t, "Content-Encoding", []byte(ce), []byte(encoding.Name))
 
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("failed to close response body: %v", err)
+		}
+	}()
 	received, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
 	assertEqual(t, "received", plainText, received)
 }
 
@@ -187,7 +211,9 @@ func ExampleHandler() {
 		key = []byte("256-bit long key")
 		rs  = 4096
 	)
-	_ = http.ListenAndServe(":8000", Handler(key, rs, "some-id", h))
+	if err := http.ListenAndServe(":8000", Handler(key, rs, "some-id", h)); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
 }
 
 func ExampleTransport() {
@@ -203,19 +229,22 @@ func ExampleTransport() {
 	}
 
 	client := &http.Client{Transport: transport}
-	resp, err := client.Post("https://api.example.com", "application/json", payload) //nolint:noctx
+	resp, err := client.Post("https://api.example.com", "application/json", payload) //nolint:noctx // example code
 	if err != nil {
 		log.Fatalf("HTTP request failed: %v", err)
 	}
-
 	// payload was encrypted before it was sent
 	// resp.Body is decrypted if the server returned an encrypted response.
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		resp.Body.Close()
-		log.Fatalf("error reading response: %v", err)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("error closing response body: %v", closeErr) //nolint:gocritic // Example code, not a test
+		}
+		log.Fatalf("error reading response: %v", err) //nolint:gocritic // Example code, not a test
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		log.Printf("error closing response body: %v", err)
+	}
 
-	log.Println(data) // plain data
+	log.Println(string(data)) // plain data
 }

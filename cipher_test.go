@@ -26,7 +26,7 @@ func TestCipherUnmarshalJSON(t *testing.T) {
 
 	for result, cipher := range suites {
 		t.Run(fmt.Sprintf("expected result: %v", result), func(t *testing.T) {
-			encoded := fmt.Sprintf(`{"cipher":"%s"}`, base64.StdEncoding.EncodeToString(cipher))
+			encoded := fmt.Sprintf(`{"cipher":%q}`, base64.StdEncoding.EncodeToString(cipher))
 			err := json.Unmarshal([]byte(encoded), &dest)
 			if result != (err == nil) {
 				t.Fatal(err)

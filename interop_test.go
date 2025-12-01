@@ -52,8 +52,14 @@ func TestGenerateInteropVectors(t *testing.T) {
 
 	for i := range vectors {
 		v := &vectors[i]
-		key, _ := base64.StdEncoding.DecodeString(v.KeyBase64)
-		salt, _ := base64.StdEncoding.DecodeString(v.SaltBase64)
+		key, err := base64.StdEncoding.DecodeString(v.KeyBase64)
+		if err != nil {
+			t.Fatalf("%s: failed to decode key: %v", v.Name, err)
+		}
+		salt, err := base64.StdEncoding.DecodeString(v.SaltBase64)
+		if err != nil {
+			t.Fatalf("%s: failed to decode salt: %v", v.Name, err)
+		}
 
 		buf := new(bytes.Buffer)
 		w, err := NewWriter(key, salt, v.RecordSize, v.KeyID, buf)
@@ -70,8 +76,11 @@ func TestGenerateInteropVectors(t *testing.T) {
 	}
 
 	// Write vectors to file for JS tests
-	data, _ := json.MarshalIndent(vectors, "", "  ")
-	if err := os.WriteFile("js/src/interop-vectors.json", data, 0644); err != nil {
+	data, err := json.MarshalIndent(vectors, "", "  ")
+	if err != nil {
+		t.Fatalf("Failed to marshal vectors: %v", err)
+	}
+	if err := os.WriteFile("js/src/interop-vectors.json", data, 0o644); err != nil {
 		t.Fatalf("Failed to write vectors: %v", err)
 	}
 	t.Logf("Generated %d test vectors", len(vectors))
@@ -91,8 +100,14 @@ func TestInteropVectorsRoundTrip(t *testing.T) {
 
 	for _, v := range vectors {
 		t.Run(v.Name, func(t *testing.T) {
-			key, _ := base64.StdEncoding.DecodeString(v.KeyBase64)
-			cipher, _ := base64.StdEncoding.DecodeString(v.Cipher)
+			key, err := base64.StdEncoding.DecodeString(v.KeyBase64)
+			if err != nil {
+				t.Fatalf("failed to decode key: %v", err)
+			}
+			cipher, err := base64.StdEncoding.DecodeString(v.Cipher)
+			if err != nil {
+				t.Fatalf("failed to decode cipher: %v", err)
+			}
 
 			r := NewReader(key, bytes.NewReader(cipher))
 			plain, err := io.ReadAll(r)

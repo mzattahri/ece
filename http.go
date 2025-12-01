@@ -68,7 +68,7 @@ func (w *ResponseWriter) Flush() {
 	}
 }
 
-// See the documentation for http.ResponseWriter.
+// Write encrypts p and writes it to the underlying ResponseWriter.
 func (w *ResponseWriter) Write(p []byte) (int, error) {
 	return w.ew.Write(p)
 }
@@ -191,7 +191,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if ok && encoding.checkKey(t.key) {
 		t.decryptResponse(resp)
 	} else if t.Strict {
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("ece: failed to close response body", "error", err)
+		}
 		return nil, errors.New("ece: strict mode requires encrypted response")
 	}
 

@@ -121,12 +121,12 @@ func encodingFromKey(k []byte) (*Encoding, bool) {
 // GenerateKey returns a random key suitable
 // for this encoding.
 //
-// GenerateKey panics if rand returns an error,
+// GenerateKey panics if rng returns an error,
 // which is standard behavior for cryptographic
 // random number generation failures.
-func (e *Encoding) GenerateKey(rand io.Reader) []byte {
+func (e *Encoding) GenerateKey(rng io.Reader) []byte {
 	k := make([]byte, e.Bits/8)
-	if _, err := io.ReadFull(rand, k); err != nil {
+	if _, err := io.ReadFull(rng, k); err != nil {
 		panic(err)
 	}
 	return k
@@ -172,12 +172,12 @@ var (
 // GenerateSalt returns a randomly generated
 // salt array.
 //
-// GenerateSalt panics if rand returns an error,
+// GenerateSalt panics if rng returns an error,
 // which is standard behavior for cryptographic
 // random number generation failures.
-func GenerateSalt(rand io.Reader) []byte {
+func GenerateSalt(rng io.Reader) []byte {
 	k := make([]byte, SaltLength)
-	if _, err := io.ReadFull(rand, k); err != nil {
+	if _, err := io.ReadFull(rng, k); err != nil {
 		panic(err)
 	}
 	return k
@@ -385,7 +385,7 @@ func (e *Writer) flush(closing bool) (err error) {
 		padding = 0
 	}
 	e.buf = append(e.buf, delimiter)
-	e.buf = append(e.buf, bytes.Repeat([]byte{recordPadding}, padding)...)
+	e.buf = append(e.buf, make([]byte, padding)...)
 
 	// Record-size check
 	if !closing && len(e.buf)+e.gcm.Overhead() != e.header.RecordSize() {
@@ -725,7 +725,7 @@ func Pipe(src io.Reader, key []byte, recordSize int, keyID string) (io.ReadClose
 //
 // The record size is set to 4096, and the key ID used is
 // the hex-encoded SHA-256 hash of the key.
-func Encode[T ~string | ~[]byte](key []byte, plain T) (cipher []byte, err error) {
+func Encode[T ~string | ~[]byte](key []byte, plain T) (ciphertext []byte, err error) {
 	var (
 		b         = &bytes.Buffer{}
 		keyDigest = sha256.Sum256(key)
@@ -743,8 +743,8 @@ func Encode[T ~string | ~[]byte](key []byte, plain T) (cipher []byte, err error)
 	return b.Bytes(), nil
 }
 
-// Decode decodes cipher using the given key.
-func Decode(key []byte, cipher []byte) (plain []byte, err error) {
-	r := NewReader(key, bytes.NewReader(cipher))
+// Decode decodes ciphertext using the given key.
+func Decode(key, ciphertext []byte) (plain []byte, err error) {
+	r := NewReader(key, bytes.NewReader(ciphertext))
 	return io.ReadAll(r)
 }

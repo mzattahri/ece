@@ -113,7 +113,7 @@ issues:
 
 output:
   formats:
-    - format: colored-line-number
+    colored-line-number:
       print-linter-name: true
       print-issued-lines: true
   sort-results: true

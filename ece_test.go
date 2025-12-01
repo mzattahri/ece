@@ -193,7 +193,9 @@ func testEncryptDecrypt(t *testing.T, src []byte, rs int) {
 		t.Fatal(err)
 	}
 
-	_, _ = io.Copy(w, bytes.NewReader(src))
+	if _, err := io.Copy(w, bytes.NewReader(src)); err != nil {
+		t.Fatal(err)
+	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -281,9 +283,11 @@ func ExampleReader() {
 	if err != nil {
 		log.Fatalf("error during decryption: %v", err)
 	}
-	defer r.Close()
+	if err := r.Close(); err != nil {
+		log.Fatalf("error closing reader: %v", err)
+	}
 
-	fmt.Println(plain) // plain version of the content of cipher.
+	fmt.Println(string(plain)) // plain version of the content of cipher.
 }
 
 func ExampleWriter() {
@@ -319,7 +323,7 @@ func ExamplePipe() {
 		log.Fatal(err)
 	}
 
-	_, _ = http.Post("example.com", "application/octet/stream", r) //nolint:bodyclose,noctx // example
+	_, _ = http.Post("example.com", "application/octet/stream", r) //nolint:bodyclose,noctx,errcheck // example code
 
 	// The HTTP POST request was sent with the content of plain
 	// encrypted.
