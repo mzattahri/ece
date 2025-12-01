@@ -1,24 +1,11 @@
 package ece
 
 import (
+	"crypto/rand"
 	"errors"
-	"io"
-	"log"
+	"log/slog"
 	"net/http"
 )
-
-// encodingFromKeySize returns the name of the encoding
-// based on length of k.
-func encodingFromKeySize(k []byte) (*Encoding, bool) {
-	switch size := len(k) * 8; size {
-	case AES256GCM.Bits:
-		return AES256GCM, true
-	case AES128GCM.Bits:
-		return AES128GCM, true
-	default:
-		return nil, false
-	}
-}
 
 // getContentEncoding returns the name of the encoding
 // the request's data is encoded with according
@@ -88,21 +75,18 @@ func (w *ResponseWriter) Write(p []byte) (int, error) {
 
 // NewResponseWriter upgrades w to write ECE-encoded
 // data in HTTP responses.
-func NewResponseWriter(key []byte, recordSize int, w http.ResponseWriter) (*ResponseWriter, error) {
-	encoding, ok := encodingFromKeySize(key)
+func NewResponseWriter(key []byte, recordSize int, keyID string, w http.ResponseWriter) (*ResponseWriter, error) {
+	encoding, ok := encodingFromKey(key)
 	if !ok {
 		return nil, errors.New("invalid key size")
 	}
 
-	ew, err := NewWriter(key, NewRandomSalt(), recordSize, "", w)
+	ew, err := NewWriter(key, GenerateSalt(rand.Reader), recordSize, keyID, w)
 	if err != nil {
 		return nil, err
 	}
-	w.Header().Add("Accept-Encoding", encoding.Name)
 	w.Header().Add("Content-Encoding", encoding.Name)
 	w.Header().Add("Vary", "Content-Encoding")
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Add("Vary", "Content-Type")
 	return &ResponseWriter{encoding: encoding, ew: ew, ResponseWriter: w}, nil
 }
 
@@ -117,7 +101,7 @@ func NewResponseWriter(key []byte, recordSize int, w http.ResponseWriter) (*Resp
 // If the configured key doesn't match the encoding scheme
 // announced in a request, the server will responds with
 // status code 415 Unsupported Media Type.
-func Handler(key []byte, recordSize int, h http.Handler) http.Handler {
+func Handler(key []byte, recordSize int, keyID string, next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		contentEncoding, ok := getContentEncoding(r.Header)
 		if ok {
@@ -125,121 +109,133 @@ func Handler(key []byte, recordSize int, h http.Handler) http.Handler {
 				r.Body = NewReader(key, r.Body)
 			} else {
 				w.WriteHeader(http.StatusUnsupportedMediaType)
+				return
 			}
 		}
 
 		acceptedEncoding, ok := getAcceptedEncoding(r.Header)
 		if ok && acceptedEncoding.checkKey(key) {
-			rw, err := NewResponseWriter(key, recordSize, w)
+			rw, err := NewResponseWriter(key, recordSize, keyID, w)
 			if err != nil {
-				log.Printf("ece: failed to create a ResponseWriter : %v\n", err)
+				slog.ErrorContext(r.Context(), "ece: failed to create ResponseWriter", "error", err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			defer rw.Flush()
-			defer rw.ew.Close()
+
+			if r.Method == http.MethodHead || r.Method == http.MethodOptions {
+				rw.Header().Set("Accept-Encoding", acceptedEncoding.Name)
+			}
+
+			defer func() {
+				if err := rw.ew.Close(); err != nil {
+					slog.ErrorContext(r.Context(), "ece: failed to close ResponseWriter", "error", err)
+				}
+				rw.Flush()
+			}()
 			w = rw
 		}
 
-		h.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 	}
 
 	return http.HandlerFunc(fn)
 }
 
-// Client is a wrapper around http.Client, and handles
-// the encryption of outgoing requests, and the
-// decryption of responses.
+// Transport is an [http.RoundTripper] that encrypts outgoing
+// request bodies and decrypts incoming response bodies using ECE.
 //
-// Requests are systematically encrypted, while responses
+// Request bodies are systematically encrypted, while responses
 // are only decrypted if the Content-Encoding header is
 // set to "aes128gcm" or "aes256gcm".
-type Client struct {
-	Strict   bool
+type Transport struct {
+	// Base is the underlying RoundTripper. If nil, [http.DefaultTransport] is used.
+	Base http.RoundTripper
+
+	// KeyID is an optional identifier for the encryption key.
+	KeyID string
+
+	// RecordSize is the encryption record size. If zero, defaults to 4096.
+	RecordSize int
+
+	// Strict, when true, rejects responses that are not ECE-encoded.
+	Strict bool
+
 	key      []byte
-	keyID    string
 	encoding *Encoding
-
-	*http.Client
 }
 
-// Get issues a GET to the specified URL.
-func (c *Client) Get(url string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	return c.Do(req)
-}
-
-// Post issues a POST to the specified URL.
-func (c *Client) Post(url, contentType string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", contentType)
-	return c.Do(req)
-}
-
-// hijackRequest modified req.Body to use an encrypter.
-func (c *Client) hijackRequest(req *http.Request) error {
-	r, err := Pipe(req.Body, c.key, 4096, c.keyID)
-	if err != nil {
-		return err
-	}
-
-	req.ContentLength = 0
-	req.Body = r
-	req.Header.Set("Content-Encoding", c.encoding.Name)
-	return nil
-}
-
-// hijackResponse modifies resp.Body to use a decrypter.
-func (c *Client) hijackResponse(resp *http.Response) error {
-	resp.Body = NewReader(c.key, resp.Body)
-	resp.ContentLength = 0
-	return nil
-}
-
-// Do encrypts the content of req.Body before it's sent, and decrypts the
-// content of resp.Body before it's read.
-func (c *Client) Do(req *http.Request) (*http.Response, error) {
+// RoundTrip implements [http.RoundTripper].
+//
+// It encrypts the request body (if present) before sending,
+// and decrypts the response body if the server returns an
+// ECE-encoded response.
+func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body != nil {
-		if err := c.hijackRequest(req); err != nil {
+		if err := t.encryptRequest(req); err != nil {
 			return nil, err
 		}
 	}
-	req.Header.Set("Accept-Encoding", c.encoding.Name)
+	req.Header.Set("Accept-Encoding", t.encoding.Name)
 
-	resp, err := c.Client.Do(req)
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	resp, err := base.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
 
 	encoding, ok := getContentEncoding(resp.Header)
-	if ok && encoding.checkKey(c.key) {
-		if err := c.hijackResponse(resp); err != nil {
-			return nil, err
-		}
+	if ok && encoding.checkKey(t.key) {
+		t.decryptResponse(resp)
+	} else if t.Strict {
+		resp.Body.Close()
+		return nil, errors.New("ece: strict mode requires encrypted response")
 	}
 
 	return resp, nil
 }
 
-// NewClient returns a new HTTP client capable of encoding
-// and decoding ECE.
-func NewClient(keyID string, key []byte) (*Client, error) {
-	encoding, ok := encodingFromKeySize(key)
-	if !ok {
-		return nil, errors.New("invalid key size")
+// encryptRequest encrypts req.Body using ECE.
+func (t *Transport) encryptRequest(req *http.Request) error {
+	rs := t.RecordSize
+	if rs == 0 {
+		rs = 4096
 	}
 
-	c := &Client{
-		Client:   http.DefaultClient,
-		keyID:    keyID,
-		key:      key,
-		encoding: encoding,
+	r, err := Pipe(req.Body, t.key, rs, t.KeyID)
+	if err != nil {
+		return err
 	}
-	return c, nil
+
+	req.ContentLength = -1
+	req.Body = r
+	req.Header.Set("Content-Encoding", t.encoding.Name)
+	return nil
+}
+
+// decryptResponse wraps resp.Body with an ECE decrypter.
+func (t *Transport) decryptResponse(resp *http.Response) {
+	resp.Body = NewReader(t.key, resp.Body)
+	resp.ContentLength = -1
+}
+
+// NewTransport returns an [http.RoundTripper] that encrypts requests
+// and decrypts responses using this encoding.
+//
+// The base parameter specifies the underlying RoundTripper to use.
+// If nil, [http.DefaultTransport] is used.
+func (e *Encoding) NewTransport(key []byte, keyID string, recordSize int, base http.RoundTripper) (*Transport, error) {
+	if !e.checkKey(key) {
+		return nil, errors.New("ece: invalid key size for " + e.Name)
+	}
+	return &Transport{
+		Base:       base,
+		KeyID:      keyID,
+		RecordSize: recordSize,
+		key:        key,
+		encoding:   e,
+	}, nil
 }

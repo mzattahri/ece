@@ -1,3 +1,3 @@
-module code.posterity.life/ece
+module mz.attahri.com/code/ece/v2
 
-go 1.18
+go 1.24

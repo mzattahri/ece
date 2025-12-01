@@ -1,0 +1,122 @@
+version: '2'
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck # Check for unchecked errors
+    - govet # Standard Go vet checks
+    - ineffassign # Detect ineffectual assignments
+    - staticcheck # Advanced static analysis (includes gosimple)
+    - unused # Check for unused code
+    - misspell # Check spelling
+    - gocritic # Comprehensive linter with many checks
+    - revive # Fast, configurable, extensible linter
+    - gosec # Security-focused linter
+    - unconvert # Remove unnecessary type conversions
+    - unparam # Find unused function parameters
+    - bodyclose # Check HTTP response bodies are closed
+    - noctx # Find http requests without context
+    - sqlclosecheck # Check SQL rows/statements are closed
+    - rowserrcheck # Check SQL rows errors are checked
+
+  disable:
+    - exhaustive # Can be too strict for switch statements
+    - exhaustruct # Can be too strict for struct initialization
+    - funlen # Function length check can be subjective
+    - gochecknoglobals # Globals sometimes needed
+    - gocyclo # Cyclomatic complexity can be subjective
+    - godox # Allow TODO/FIXME comments
+    - lll # Line length too strict
+    - nestif # Nesting depth can be subjective
+    - wsl # Whitespace linter too opinionated
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - shadow
+        - fieldalignment # Struct field ordering for memory optimization is too pedantic
+
+    staticcheck:
+      checks: ['all']
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    gosec:
+      excludes:
+        - G104 # Allow some unhandled errors where appropriate
+      severity: medium
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+      disabled-checks:
+        - captLocal
+
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+        - name: unexported-return
+          severity: warning
+        - name: var-naming
+          severity: warning
+
+  exclusions:
+    rules:
+      # Exclude some linters from running on tests files
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+
+      # Exclude known linters from partially hard-vendored code
+      - path: vendor/
+        linters:
+          - all
+
+      # Exclude shadow checking on short variable names
+      - linters:
+          - govet
+        text: 'shadow: declaration of "(err|ctx)"'
+
+      # Allow capitalized local variable names (SRP uses A, B, M1, M2 per RFC 5054)
+      - linters:
+          - gocritic
+        text: 'captLocal:'
+
+      # Internal compute functions have error returns for API consistency
+      - linters:
+          - unparam
+        text: 'result 1 \(error\) is always nil'
+        path: srp\.go
+
+issues:
+  # Maximum issues count per one linter
+  max-issues-per-linter: 0
+
+  # Maximum count of issues with the same text
+  max-same-issues: 0
+
+  # Unique issues by line
+  uniq-by-line: true
+
+output:
+  formats:
+    - format: colored-line-number
+      print-linter-name: true
+      print-issued-lines: true
+  sort-results: true
+  sort-order:
+    - linter
+    - file

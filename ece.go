@@ -17,13 +17,6 @@
 // While [RFC8188] only mentions AES-128-GCM, this implementation extends it
 // with support for 256-bit encryption (i.e. AES-256-GCM).
 //
-// Use 32-byte keys for AES-256-GCM, and 16-byte ones for AES-128-GCM.
-//
-//		key := ece.AES256GCM.RandomKey()
-//		fmt.Println(len(key))
-//
-//	 -> 32
-//
 // # Record Size
 //
 // ECE encrypts data in chunks of predetermined length.
@@ -39,7 +32,7 @@
 // [RFC8188] recommends using multiples of 16.
 //
 // [RFC8188]: https://datatracker.ietf.org/doc/html/rfc8188
-package ece // code.posterity.life/ece
+package ece // mz.attahri.com/code/ece/v2
 
 import (
 	"bytes"
@@ -48,7 +41,9 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -85,8 +80,9 @@ const SaltLength int = 16
 // Encoding represents a type of supported
 // encoding.
 type Encoding struct {
-	Name string
-	Bits int
+	Name    string
+	Bits    int
+	cekInfo []byte
 }
 
 // NewWriter returns a new writer for this encoding.
@@ -98,7 +94,7 @@ func (e *Encoding) NewWriter(key, salt []byte, recordSize int, keyID string, w i
 }
 
 // NewReader returns a new reader for this encoding.
-func (e *Encoding) NewReader(key []byte, r io.ReadCloser) (io.Reader, error) {
+func (e *Encoding) NewReader(key []byte, r io.Reader) (*Reader, error) {
 	if !e.checkKey(key) {
 		return nil, errors.New("ece: invalid key size")
 	}
@@ -110,13 +106,27 @@ func (e *Encoding) checkKey(k []byte) bool {
 	return len(k) == (e.Bits / 8)
 }
 
-// RandomKey returns a random key suitable
-// for this encoding. The function will panic
-// if it can't generate random data using
-// crypto/rand.
-func (e *Encoding) RandomKey() []byte {
+// encodingFromKey returns the encoding for the given key based on its size.
+func encodingFromKey(k []byte) (*Encoding, bool) {
+	switch len(k) * 8 {
+	case AES256GCM.Bits:
+		return AES256GCM, true
+	case AES128GCM.Bits:
+		return AES128GCM, true
+	default:
+		return nil, false
+	}
+}
+
+// GenerateKey returns a random key suitable
+// for this encoding.
+//
+// GenerateKey panics if rand returns an error,
+// which is standard behavior for cryptographic
+// random number generation failures.
+func (e *Encoding) GenerateKey(rand io.Reader) []byte {
 	k := make([]byte, e.Bits/8)
-	if _, err := io.ReadFull(rand.Reader, k); err != nil {
+	if _, err := io.ReadFull(rand, k); err != nil {
 		panic(err)
 	}
 	return k
@@ -142,8 +152,8 @@ func EncodingFromString(encoding string) (*Encoding, bool) {
 
 // Supported encodings.
 var (
-	AES128GCM = &Encoding{"aes128gcm", 128}
-	AES256GCM = &Encoding{"aes256gcm", 256}
+	AES128GCM = &Encoding{"aes128gcm", 128, append([]byte("Content-Encoding: aes128gcm"), 0x00, 0x01)}
+	AES256GCM = &Encoding{"aes256gcm", 256, append([]byte("Content-Encoding: aes256gcm"), 0x00, 0x01)}
 )
 
 // Constants defined in the RFC.
@@ -154,18 +164,21 @@ const (
 )
 
 var (
-	cekInfo   = append([]byte("Content-Encoding: aes128gcm"), 0x00, 0x01)
 	nonceInfo = append([]byte("Content-Encoding: nonce"), 0x00, 0x01)
 	bigZero   = new(big.Int).SetInt64(0)
 	bigOne    = new(big.Int).SetInt64(1)
 )
 
-// NewRandomSalt returns a randomly generated salt
-// (SaltLength bytes).
-func NewRandomSalt() []byte {
+// GenerateSalt returns a randomly generated
+// salt array.
+//
+// GenerateSalt panics if rand returns an error,
+// which is standard behavior for cryptographic
+// random number generation failures.
+func GenerateSalt(rand io.Reader) []byte {
 	k := make([]byte, SaltLength)
-	if _, err := rand.Read(k[:]); err != nil {
-		panic(fmt.Errorf("unable to source random bytes: %v", err))
+	if _, err := io.ReadFull(rand, k); err != nil {
+		panic(err)
 	}
 	return k
 }
@@ -176,7 +189,7 @@ func NewRandomSalt() []byte {
 // Formula:
 //
 //	HMAC-SHA-256 (salt, IKM)
-func computePRK(key, salt []byte, length int) []byte {
+func computePRK(key, salt []byte) []byte {
 	h := hmac.New(sha256.New, salt)
 	h.Write(key)
 	return h.Sum(nil)[:h.Size()]
@@ -188,10 +201,10 @@ func computePRK(key, salt []byte, length int) []byte {
 // Formula:
 //
 //	CEK = HMAC-SHA-256(PRK, cek_info || 0x01)
-func deriveCEK(prk []byte, length int) []byte {
+func deriveCEK(prk []byte, enc *Encoding) []byte {
 	h := hmac.New(sha256.New, prk)
-	h.Write(cekInfo)
-	return h.Sum(nil)[:length]
+	h.Write(enc.cekInfo)
+	return h.Sum(nil)[:enc.Bits/8]
 }
 
 // deriveNonce derives a nonce for a specific record in
@@ -208,10 +221,8 @@ func deriveNonce(prk []byte, sequence *big.Int, length int) []byte {
 	seq := make([]byte, length)
 	sequence.FillBytes(seq)
 
-	nonce, err := xorBytes(hashed, seq)
-	if err != nil {
-		panic(err)
-	}
+	nonce := make([]byte, len(seq))
+	subtle.XORBytes(nonce, hashed, seq)
 	return nonce
 }
 
@@ -228,8 +239,6 @@ var offsets = []int{
 
 // Header represents the header of an encrypted
 // message.
-//
-// Structure:
 //
 //	+-----------+--------+-----------+---------------+
 //	| salt (16) | rs (4) | idLen (1) | keyID (idLen) |
@@ -267,18 +276,20 @@ func (h Header) KeyID() string {
 //
 // ReadFrom implements io.ReaderFrom.
 func (h *Header) ReadFrom(r io.Reader) (n int64, err error) {
-	const min = SaltLength + rsLen + idLen
+	const minHeaderLen = SaltLength + rsLen + idLen
 
-	*h = make(Header, min)
-	if read, err := io.ReadFull(r, *h); err != nil {
-		n += int64(read)
+	*h = make(Header, minHeaderLen)
+	read, err := io.ReadFull(r, *h)
+	n += int64(read)
+	if err != nil {
 		return n, err
 	}
 
 	if idLen := h.idLength(); idLen > 0 {
 		keyID := make([]byte, idLen)
-		if read, err := io.ReadFull(r, keyID); err != nil {
-			n += int64(read)
+		read, err := io.ReadFull(r, keyID)
+		n += int64(read)
+		if err != nil {
 			return n, err
 		}
 		*h = append(*h, keyID...)
@@ -292,21 +303,21 @@ func NewHeader(salt []byte, recordSize int, keyID string) (Header, error) {
 	if len(salt) != SaltLength {
 		return nil, fmt.Errorf("ece: salt length is %d bytes, but must be %d", len(salt), SaltLength)
 	}
-	if recordSize > math.MaxUint32 {
-		return nil, fmt.Errorf("ece: record size cannot be larger than %d", math.MaxUint32)
+	if minRS := 18; recordSize < minRS || recordSize > math.MaxUint32 {
+		return nil, fmt.Errorf("ece: record size must be between %d and %d", minRS, math.MaxUint32)
 	}
 	if len(keyID) > math.MaxUint8 {
 		return nil, fmt.Errorf("ece: keyID cannot be longer than %d bytes", math.MaxUint8)
 	}
 
 	rs := make([]byte, 4)
-	binary.BigEndian.PutUint32(rs, uint32(recordSize))
+	binary.BigEndian.PutUint32(rs, uint32(recordSize)) //nolint:gosec // validated above
 
 	b := make([]byte, 0, len(salt)+4+1+len(keyID))
 	b = append(b, salt...)
 	b = append(b, rs...)
 
-	b = append(b, uint8(utf8.RuneCount([]byte(keyID))))
+	b = append(b, uint8(utf8.RuneCount([]byte(keyID)))) //nolint:gosec // validated above
 	b = append(b, []byte(keyID)...)
 	return b, nil
 }
@@ -332,28 +343,27 @@ func (e *Writer) ReadFrom(r io.Reader) (n int64, err error) {
 		nn int
 	)
 	for {
-		nn, err = r.Read(p[:])
+		nn, err = r.Read(p)
 		n += int64(nn)
-		if err == nil {
+		switch {
+		case err == nil:
 			_, err = e.Write(p[:nn])
 			if err != nil {
-				break
+				return
 			}
-		} else if errors.Is(err, io.EOF) {
+		case errors.Is(err, io.EOF):
 			err = nil
-			break
-		} else {
-			break
+			return
+		default:
+			return
 		}
 	}
-
-	return
 }
 
 // encrypt returns the cipher of p.
-func (e *Writer) encrypt(p []byte) ([]byte, error) {
+func (e *Writer) encrypt(p []byte) []byte {
 	nonce := deriveNonce(e.prk, e.seq, e.gcm.NonceSize())
-	return e.gcm.Seal(p[:0], nonce, p, nil), nil
+	return e.gcm.Seal(p[:0], nonce, p, nil)
 }
 
 // flush pushes data to the underlying writer.
@@ -382,10 +392,7 @@ func (e *Writer) flush(closing bool) (err error) {
 		return &Error{msg: "ece: invalid record length"}
 	}
 
-	e.buf, err = e.encrypt(e.buf)
-	if err != nil {
-		return
-	}
+	e.buf = e.encrypt(e.buf)
 
 	// Write the header if this is the first sequence.
 	if e.seq.Cmp(bigZero) == 0 {
@@ -424,7 +431,7 @@ func (e *Writer) Write(p []byte) (n int, err error) {
 	left := len(p)
 	for left > 0 {
 		init := len(e.buf)
-		avail := int(math.Min(float64(left), float64(e.contentSize-init)))
+		avail := min(left, e.contentSize-init)
 
 		pos := len(p) - left
 		e.buf = append(e.buf, p[pos:pos+avail]...)
@@ -475,13 +482,18 @@ func (e *Writer) Close() (err error) {
 
 // NewWriter writes encrypted data into w.
 func NewWriter(key, salt []byte, recordSize int, keyID string, w io.Writer) (*Writer, error) {
+	enc, ok := encodingFromKey(key)
+	if !ok {
+		return nil, errors.New("ece: invalid key size")
+	}
+
 	header, err := NewHeader(salt, recordSize, keyID)
 	if err != nil {
 		return nil, err
 	}
 
-	prk := computePRK(key, header.Salt(), len(key))
-	cek := deriveCEK(prk, len(key))
+	prk := computePRK(key, header.Salt())
+	cek := deriveCEK(prk, enc)
 
 	ci, err := aes.NewCipher(cek)
 	if err != nil {
@@ -518,6 +530,7 @@ type Reader struct {
 	gcm cipher.AEAD
 	prk []byte
 	key []byte
+	enc *Encoding
 	r   io.Reader
 	buf []byte
 	seq *big.Int // uint96
@@ -537,8 +550,8 @@ func (d *Reader) readHeader() error {
 		return err
 	}
 
-	prk := computePRK(d.key, d.Header.Salt(), len(d.key))
-	cek := deriveCEK(prk, len(d.key))
+	prk := computePRK(d.key, d.Header.Salt())
+	cek := deriveCEK(prk, d.enc)
 
 	ci, err := aes.NewCipher(cek)
 	if err != nil {
@@ -631,7 +644,7 @@ func (d *Reader) Read(p []byte) (n int, err error) {
 // for the record size declared in the header of the ECE cipher.
 func (d *Reader) WriteTo(dst io.Writer) (n int64, err error) {
 	if d.Header != nil {
-		return 0, errors.New("invalid state")
+		return 0, errors.New("ece: WriteTo must be called before any Read calls")
 	}
 	if err = d.readHeader(); err != nil {
 		return
@@ -642,7 +655,7 @@ func (d *Reader) WriteTo(dst io.Writer) (n int64, err error) {
 		nr int
 	)
 	for {
-		nr, err = d.Read(p[:])
+		nr, err = d.Read(p)
 		if err != nil && !errors.Is(err, io.EOF) {
 			break
 		}
@@ -672,33 +685,27 @@ func (d *Reader) Close() error {
 }
 
 // NewReader deciphers data read from r.
+//
+// NewReader panics if the key length is not 16 or 32 bytes.
 func NewReader(key []byte, r io.Reader) *Reader {
+	enc, ok := encodingFromKey(key)
+	if !ok {
+		panic("ece: invalid key size")
+	}
 	return &Reader{
 		r:   r,
 		key: key,
+		enc: enc,
 	}
 }
 
-// xorBytes returns an array containing
-// the result of of a[i] XOR b[i].
-func xorBytes(a, b []byte) ([]byte, error) {
-	if len(a) != len(b) {
-		return nil, errors.New("ece: slices must be of equal length")
-	}
-	output := make([]byte, len(a))
-	for i := 0; i < len(a); i++ {
-		output[i] = a[i] ^ b[i]
-	}
-	return output, nil
-}
-
-// Pipe returns a reader from which the encrypted content in src
-// can be read in clear.
+// Pipe returns an [io.Reader] from which the content of src
+// can be read in an encrypted form.
 //
-// Pipe will read src until EOF is reached.
+// Pipe will read src until it's closed or [io.EOF] is reached.
 func Pipe(src io.Reader, key []byte, recordSize int, keyID string) (io.ReadCloser, error) {
 	r, w := io.Pipe()
-	ew, err := NewWriter(key, NewRandomSalt(), recordSize, keyID, w)
+	ew, err := NewWriter(key, GenerateSalt(rand.Reader), recordSize, keyID, w)
 	if err != nil {
 		return nil, err
 	}
@@ -714,19 +721,30 @@ func Pipe(src io.Reader, key []byte, recordSize int, keyID string) (io.ReadClose
 	return r, nil
 }
 
-// EncodeString encodes the given string using the given key,
-// and a random salt.
-func EncodeString(key []byte, content string) ([]byte, error) {
-	b := &bytes.Buffer{}
-	w, err := NewWriter(key, NewRandomSalt(), 1024, "", b)
+// Encode encodes content using the given encryption key.
+//
+// The record size is set to 4096, and the key ID used is
+// the hex-encoded SHA-256 hash of the key.
+func Encode[T ~string | ~[]byte](key []byte, plain T) (cipher []byte, err error) {
+	var (
+		b         = &bytes.Buffer{}
+		keyDigest = sha256.Sum256(key)
+	)
+	w, err := NewWriter(key, GenerateSalt(rand.Reader), 4096, hex.EncodeToString(keyDigest[:]), b)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := io.WriteString(w, content); err != nil {
+	if _, err := w.Write([]byte(plain)); err != nil {
 		return nil, err
 	}
 	if err := w.Close(); err != nil {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+// Decode decodes cipher using the given key.
+func Decode(key []byte, cipher []byte) (plain []byte, err error) {
+	r := NewReader(key, bytes.NewReader(cipher))
+	return io.ReadAll(r)
 }

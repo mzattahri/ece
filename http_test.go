@@ -2,6 +2,7 @@ package ece
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"io"
 	"log"
@@ -12,17 +13,17 @@ import (
 )
 
 func TestResponseWriter(t *testing.T) {
-	fn := func(w http.ResponseWriter, r *http.Request) {
+	fn := func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(plain)
+		_, _ = w.Write(plain)
 	}
 
-	encoding, ok := encodingFromKeySize(key)
+	encoding, ok := encodingFromKey(key)
 	if !ok {
 		t.Fatal("unsupported encoding")
 	}
 
-	h := Handler(key, 25, http.HandlerFunc(fn))
+	h := Handler(key, 25, "", http.HandlerFunc(fn))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(plain))
 	req.Header.Add("Content-Encoding", encoding.Name)
@@ -53,7 +54,7 @@ func TestResponseWriter(t *testing.T) {
 // and expects the middleware to decrypt it transparently
 // before it hits the handler.
 func TestRequestBody(t *testing.T) {
-	fn := func(w http.ResponseWriter, r *http.Request) {
+	fn := func(_ http.ResponseWriter, r *http.Request) {
 		received, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -62,12 +63,12 @@ func TestRequestBody(t *testing.T) {
 		assertEqual(t, "request payload", plain, received)
 	}
 
-	encoding, ok := encodingFromKeySize(key)
+	encoding, ok := encodingFromKey(key)
 	if !ok {
 		t.Fatal("unsupported encoding")
 	}
 
-	h := Handler(key, 25, http.HandlerFunc(fn))
+	h := Handler(key, 25, "", http.HandlerFunc(fn))
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(encrypted))
 	req.Header.Add("Content-Encoding", encoding.Name)
 	req.Header.Add("Accept-Encoding", encoding.Name)
@@ -78,10 +79,10 @@ func TestRequestBody(t *testing.T) {
 func TestIgnoreUnknownEncoding(t *testing.T) {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
-		io.Copy(w, r.Body)
+		_, _ = io.Copy(w, r.Body)
 	}
 
-	h := Handler(key, 25, http.HandlerFunc(fn))
+	h := Handler(key, 25, "", http.HandlerFunc(fn))
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(encrypted))
 	req.Header.Add("Content-Encoding", "invalid string")
 	req.Header.Add("Accept-Encoding", "invalid string")
@@ -97,10 +98,10 @@ func TestIgnoreUnknownEncoding(t *testing.T) {
 func TestMiddlewareInvalidKey(t *testing.T) {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
-		io.Copy(w, r.Body)
+		_, _ = io.Copy(w, r.Body)
 	}
 
-	h := Handler(key, 25, http.HandlerFunc(fn))
+	h := Handler(key, 25, "", http.HandlerFunc(fn))
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(encrypted))
 	req.Header.Add("Content-Encoding", "aes256gcm")
 	rec := httptest.NewRecorder()
@@ -112,8 +113,8 @@ func TestMiddlewareInvalidKey(t *testing.T) {
 	}
 }
 
-func TestClient(t *testing.T) {
-	encoding, ok := encodingFromKeySize(key)
+func TestTransport(t *testing.T) {
+	encoding, ok := encodingFromKey(key)
 	if !ok {
 		t.Fatal("unsupported encoding")
 	}
@@ -134,20 +135,28 @@ func TestClient(t *testing.T) {
 		}
 		assertEqual(t, "payload received", plainText, payload)
 
-		// // Write plainText, with the expectation that it will be
-		// // transparently encrypted.
+		// Write plainText, with the expectation that it will be
+		// transparently encrypted.
 		w.WriteHeader(http.StatusOK)
-		w.Write(plainText)
+		_, _ = w.Write(plainText)
 	}
-	h := Handler(key, 25, http.HandlerFunc(fn))
+	h := Handler(key, 25, "", http.HandlerFunc(fn))
 	server := httptest.NewServer(h)
 	t.Cleanup(server.Close)
 
-	client, err := NewClient("", key)
+	transport, err := encoding.NewTransport(key, "", 4096, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := client.Post(server.URL, "application/json", bytes.NewReader(plainText))
+	client := &http.Client{Transport: transport}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, bytes.NewReader(plainText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +174,7 @@ func TestClient(t *testing.T) {
 
 func ExampleHandler() {
 	h := http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
+		func(_ http.ResponseWriter, _ *http.Request) {
 			// r.Body now contains plain data if the client sent
 			// encrypted request.
 
@@ -178,22 +187,23 @@ func ExampleHandler() {
 		key = []byte("256-bit long key")
 		rs  = 4096
 	)
-	http.ListenAndServe(":8000", Handler(key, rs, h))
+	_ = http.ListenAndServe(":8000", Handler(key, rs, "some-id", h))
 }
 
-func ExampleClient() {
+func ExampleTransport() {
 	var (
 		keyID   = "ID of the key below" // (Empty string to omit)
 		key     = []byte("16 or 32 byte long key")
 		payload = strings.NewReader(`{"key": "value"}`)
 	)
 
-	c, err := NewClient(keyID, key)
+	transport, err := AES128GCM.NewTransport(key, keyID, 4096, nil)
 	if err != nil {
-		log.Fatalf("error initializing the client: %v", err)
+		log.Fatalf("error initializing transport: %v", err)
 	}
 
-	resp, err := c.Post("https://api.example.com", "application/json", payload)
+	client := &http.Client{Transport: transport}
+	resp, err := client.Post("https://api.example.com", "application/json", payload) //nolint:noctx
 	if err != nil {
 		log.Fatalf("HTTP request failed: %v", err)
 	}
@@ -202,8 +212,10 @@ func ExampleClient() {
 	// resp.Body is decrypted if the server returned an encrypted response.
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
+		resp.Body.Close()
 		log.Fatalf("error reading response: %v", err)
 	}
+	resp.Body.Close()
 
 	log.Println(data) // plain data
 }

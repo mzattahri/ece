@@ -1,10 +1,10 @@
-[![GoDoc reference](https://img.shields.io/badge/godoc-reference-blue.svg)](https://pkg.go.dev/code.posterity.life/ece)
+[![GoDoc reference](https://img.shields.io/badge/godoc-reference-blue.svg)](https://pkg.go.dev/mz.attahri.com/code/ece/v2)
+[![npm version](https://img.shields.io/npm/v/@mzattahri/ece.svg)](https://www.npmjs.com/package/@mzattahri/ece)
 
 # Encrypted-Content-Encoding for HTTP
 
-This a Go implementation of
-[RFC 8188](https://datatracker.ietf.org/doc/html/rfc8188), specifically the
-draft published on June 2017.
+An implementation of [RFC 8188](https://datatracker.ietf.org/doc/html/rfc8188)
+in Go and JavaScript/TypeScript.
 
 ECE for HTTP defines a way to use standard HTTP content encoding to exchange
 AES-GCM encrypted payloads between a client and server.
@@ -13,14 +13,24 @@ While the RFC only mentions 128-bit encryption with `AES-128-GCM`, this
 library provides support for `AES-256-GCM` as well when a key sufficiently
 long (32 bytes) is provided.
 
-## Library
+## JavaScript / TypeScript
+
+```bash
+npm i @mzattahri/ece
+```
+
+See [js/README.md](js/README.md) for full documentation.
+
+## Go
+
+See also: [TypeScript/JavaScript implementation](js/README.md)
 
 The library exposes 4 basic elements:
 
 1. A `Reader` to decrypt;
 2. A `Writer` to encrypt;
 3. An HTTP middleware to handle server-side encryption/decryption;
-4. An HTTP Client.
+4. An HTTP `Transport` for client-side encryption/decryption.
 
 ### Reader
 
@@ -50,7 +60,7 @@ var key = []byte("16 or 32 bytes long key")   // Main decryption key
 var dest io.Writer                            // Where cipher will be written
 
 var (
-  salt        = ece.NewRandomSalt()     // Must be random
+  salt        = ece.GenerateSalt(rand.Reader)  // Must be random
   recordSize  = 4096                    // Record size
   keyID       = "ID of the main key"    // (Empty string to omit)
 )
@@ -95,10 +105,11 @@ var (
 http.ListenAndServe(":8000", ece.Handler(key, rs, h))
 ```
 
-### HTTP Client
+### HTTP Transport
 
-`Client` is a wrapper around `http.Client`, and handles the encryption of
-outgoing requests, and the decryption of responses.
+`Transport` is an `http.RoundTripper` that handles the encryption of
+outgoing requests and the decryption of responses. Use it with any
+`http.Client`.
 
 Requests are systematically encrypted, while responses are only decrypted if
 the `Content-Encoding` header is set to `aes128gcm` or `aes256gcm`.
@@ -110,12 +121,13 @@ var (
   payload     = strings.NewReader(`{"key": "value"}`)
 )
 
-c, err := ece.NewClient(keyID, key)
+transport, err := ece.AES128GCM.NewTransport(key, keyID, 4096, nil)
 if err != nil {
-  log.Fatalf("error initializing the client: %v", err)
+  log.Fatalf("error initializing transport: %v", err)
 }
 
-resp, err := c.Post("https://api.example.com", "application/json", payload)
+client := &http.Client{Transport: transport}
+resp, err := client.Post("https://api.example.com", "application/json", payload)
 if err != nil {
   log.Fatalf("HTTP request failed: %v", err)
 }
@@ -131,11 +143,20 @@ if err != nil {
 log.Println(data) // plain data
 ```
 
+### Generating Keys
+
+Use the `GenerateKey` method on the encoding to create a key of the correct size:
+
+```go
+import "crypto/rand"
+
+// 256-bit key (32 bytes)
+key256 := ece.AES256GCM.GenerateKey(rand.Reader)
+
+// 128-bit key (16 bytes)
+key128 := ece.AES128GCM.GenerateKey(rand.Reader)
+```
+
 ## Contributions
 
 Contributions are welcome via Pull Requests.
-
-## About us
-
-What if you're hit by a bus tomorrow? [Posterity](https://posterity.life) helps
-you make a plan in the event something happens to you.

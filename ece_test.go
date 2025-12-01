@@ -34,7 +34,7 @@ func assertEqual(t *testing.T, desc string, wanted, got []byte) {
 	}
 }
 
-// assertNotEqualssertEqual fails t if the bytes of wanted and got are not
+// assertNotEqual fails t if the bytes of wanted and got are
 // the same.
 func assertNotEqual(t *testing.T, desc string, wanted, got []byte) {
 	t.Helper()
@@ -101,12 +101,12 @@ var (
 )
 
 func TestComputePRK(t *testing.T) {
-	got := computePRK(key, salt, keySize)
+	got := computePRK(key, salt)
 	assertEqual(t, "PRK", prk, got)
 }
 
 func TestDeriveCEK(t *testing.T) {
-	got := deriveCEK(prk, keySize)
+	got := deriveCEK(prk, AES128GCM)
 	assertEqual(t, "CEK", cek, got)
 }
 
@@ -193,8 +193,10 @@ func testEncryptDecrypt(t *testing.T, src []byte, rs int) {
 		t.Fatal(err)
 	}
 
-	io.Copy(w, bytes.NewReader(src))
-	w.Flush()
+	_, _ = io.Copy(w, bytes.NewReader(src))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	r := NewReader(key, io.NopCloser(bufCipher))
 	plain, err := io.ReadAll(r)
@@ -244,8 +246,8 @@ func TestReaderInvalidKey(t *testing.T) {
 	}
 
 	var (
-		k1  = AES256GCM.RandomKey()
-		k2  = AES128GCM.RandomKey()
+		k1  = AES256GCM.GenerateKey(rand.Reader)
+		k2  = AES128GCM.GenerateKey(rand.Reader)
 		buf = new(bytes.Buffer)
 	)
 
@@ -289,18 +291,21 @@ func ExampleWriter() {
 	var dest io.Writer // Where the encrypted data will be written
 
 	var (
-		salt       = NewRandomSalt()      // Must be random
-		recordSize = 4096                 // Bytes per block in the cipher
-		keyID      = "ID of the main key" // (Empty string to omit)
+		salt       = GenerateSalt(rand.Reader) // Must be random
+		recordSize = 4096                      // Bytes per block in the cipher
+		keyID      = "ID of the main key"      // (Empty string to omit)
 	)
 	w, err := NewWriter(key, salt, recordSize, keyID, dest)
 	if err != nil {
 		log.Fatalf("error initializing writer: %v", err)
 	}
-	defer w.Close() // Cipher may be mis-formatted if omitted
 
 	if _, err := io.WriteString(w, "Hello, World!"); err != nil {
 		log.Fatalf("error writing cipher: %v", err)
+	}
+
+	if err := w.Close(); err != nil { // Cipher may be mis-formatted if omitted
+		log.Fatalf("error closing writer: %v", err)
 	}
 
 	log.Println("dest now contains encrypted data")
@@ -314,19 +319,17 @@ func ExamplePipe() {
 		log.Fatal(err)
 	}
 
-	http.Post("example.com", "application/octet/stream", r)
+	_, _ = http.Post("example.com", "application/octet/stream", r) //nolint:bodyclose,noctx // example
 
 	// The HTTP POST request was sent with the content of plain
 	// encrypted.
 }
 
-func TestEncodeString(t *testing.T) {
-	var (
-		key    = AES256GCM.RandomKey()
-		secret = "alice sent a message to bob."
-	)
+func TestEncode(t *testing.T) {
+	var key = AES256GCM.GenerateKey(rand.Reader)
+	const secret = "alice sent a message to bob."
 
-	cipher, err := EncodeString(key, secret)
+	cipher, err := Encode(key, []byte(secret))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +347,7 @@ func TestEncodeString(t *testing.T) {
 
 func TestCopy(t *testing.T) {
 	var (
-		key  = AES256GCM.RandomKey()
+		key  = AES256GCM.GenerateKey(rand.Reader)
 		data = make([]byte, 1024<<10)
 	)
 	if _, err := rand.Read(data); err != nil {
@@ -352,7 +355,7 @@ func TestCopy(t *testing.T) {
 	}
 
 	cipher := &bytes.Buffer{}
-	w, err := NewWriter(key, NewRandomSalt(), 32, "", cipher)
+	w, err := NewWriter(key, GenerateSalt(rand.Reader), 32, "", cipher)
 	if err != nil {
 		t.Fatal(err)
 	}

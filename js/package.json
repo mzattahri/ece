@@ -1,0 +1,66 @@
+{
+  "name": "@mzattahri/ece",
+  "version": "2.0.0",
+  "description": "RFC-compliant ECE implementation.",
+  "keywords": [
+    "ece",
+    "encryption",
+    "aes-gcm",
+    "aes-128-gcm",
+    "aes-256-gcm",
+    "http",
+    "rfc8188",
+    "content-encoding",
+    "security",
+    "crypto"
+  ],
+  "homepage": "https://github.com/mzattahri/ece#readme",
+  "bugs": {
+    "url": "https://github.com/mzattahri/ece/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mzattahri/ece.git"
+  },
+  "license": "MIT",
+  "author": "MZA <mz@attahri.com>",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "fmt": "prettier -w src/",
+    "lint": "eslint src/",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.40.0",
+    "@typescript-eslint/parser": "^8.40.0",
+    "@vitest/coverage-v8": "^4.0.14",
+    "eslint": "^9.34.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.3",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.14"
+  }
+}

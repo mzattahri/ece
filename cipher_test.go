@@ -2,6 +2,7 @@ package ece
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestCipherUnmarshalJSON(t *testing.T) {
-	c, err := EncodeString(AES256GCM.RandomKey(), "hello, world!")
+	c, err := Encode(AES256GCM.GenerateKey(rand.Reader), "hello, world!")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +40,7 @@ func TestCipherUnmarshalJSON(t *testing.T) {
 }
 
 func TestCipherScan(t *testing.T) {
-	c, err := EncodeString(AES256GCM.RandomKey(), "hello, world!")
+	c, err := Encode(AES256GCM.GenerateKey(rand.Reader), "hello, world!")
 	if err != nil {
 		t.Fatal(err)
 	}

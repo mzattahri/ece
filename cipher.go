@@ -7,11 +7,21 @@ import (
 	"fmt"
 )
 
+// Valid returns true if the content of b is ECE-encoded.
+func Valid(b []byte) (ok bool) {
+	h := Header{}
+	if _, err := h.ReadFrom(bytes.NewReader(b)); err != nil {
+		return
+	}
+
+	ok = true
+	return
+}
+
 // Cipher represents an ECE-encoded cipher.
 //
-// Cipher is useful to validate a value parsed
-// from using [json.Unmarshaler], or read
-// from a database with [sql.Scanner].
+// Cipher is useful to validate an ECE-encoded value
+// read from JSON or a database.
 type Cipher []byte
 
 // UnmarshalJSON implements [json.Unmarshaler], and
@@ -25,9 +35,8 @@ func (c *Cipher) UnmarshalJSON(b []byte) error {
 	}
 	raw = raw[:n]
 
-	h := Header{}
-	if _, err := h.ReadFrom(bytes.NewReader(raw)); err != nil {
-		return fmt.Errorf("unable to read header: %v", err)
+	if !Valid(raw) {
+		return errors.New("invalid ECE header")
 	}
 
 	*c = raw
@@ -35,16 +44,20 @@ func (c *Cipher) UnmarshalJSON(b []byte) error {
 }
 
 // Scan implements [sql.Scanner] and returns an error
-// if v is not a []byte that starts with a valid ECE header.
-func (c *Cipher) Scan(src any) error {
-	b, ok := src.([]byte)
-	if !ok {
-		return errors.New("value is not a valid []byte")
+// if v is not a []byte or string that starts with a valid ECE header.
+func (c *Cipher) Scan(src interface{}) error {
+	var b []byte
+	switch v := src.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return errors.New("value must be []byte or string")
 	}
 
-	h := Header{}
-	if _, err := h.ReadFrom(bytes.NewReader(b)); err != nil {
-		return fmt.Errorf("unable to read header: %v", err)
+	if !Valid(b) {
+		return errors.New("invalid ECE header")
 	}
 
 	*c = b
