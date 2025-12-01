@@ -1,4 +1,4 @@
-.PHONY: test fmt
+.PHONY: test fmt lint
 
 test:
 	go test ./...
@@ -8,3 +8,7 @@ test:
 fmt:
 	go fmt ./...
 	$(MAKE) -C js fmt
+
+lint:
+	golangci-lint run
+	$(MAKE) -C js lint
